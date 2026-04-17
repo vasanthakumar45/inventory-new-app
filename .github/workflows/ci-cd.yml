@@ -304,7 +304,6 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
       name: production
-      url: http://${{ secrets.DEPLOY_HOST }}:8080
 
     steps:
 
