@@ -1,0 +1,205 @@
+# ================================================================
+#  Inventory App — .gitlab-ci.yml
+#  Uses GitHub Container Registry (ghcr.io) with GitHub credentials
+#  Stages: lint → build → test → push → deploy
+# ================================================================
+
+stages:
+  - lint
+  - build
+  - test
+  - push
+  - deploy
+
+# ── Global variables ────────────────────────────────────────────
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_BACKEND:  ghcr.io/$GITHUB_USERNAME/$GITHUB_REPO/backend
+  IMAGE_FRONTEND: ghcr.io/$GITHUB_USERNAME/$GITHUB_REPO/frontend
+
+# ================================================================
+# STAGE 1 — LINT
+# ================================================================
+lint:python:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install flake8 --quiet
+    - flake8 backend/app.py --max-line-length=120
+    - echo "OK Python lint passed"
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+lint:dockerfile:
+  stage: lint
+  image: hadolint/hadolint:latest-alpine
+  script:
+    - hadolint backend/Dockerfile
+    - echo "OK Dockerfile lint passed"
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ================================================================
+# STAGE 2 — BUILD
+# Logs in to GitHub Container Registry (ghcr.io) using GITHUB_TOKEN
+# ================================================================
+build:backend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+  script:
+    - docker build -t $IMAGE_BACKEND:$CI_COMMIT_SHORT_SHA -t $IMAGE_BACKEND:latest ./backend
+    - echo "OK Backend image built"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build:frontend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+  script:
+    - |
+      cat > Dockerfile.frontend << 'DOCKERFILE'
+      FROM nginx:alpine
+      COPY frontend/index.html /usr/share/nginx/html/index.html
+      COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+      EXPOSE 80
+      DOCKERFILE
+    - docker build -f Dockerfile.frontend -t $IMAGE_FRONTEND:$CI_COMMIT_SHORT_SHA -t $IMAGE_FRONTEND:latest .
+    - echo "OK Frontend image built"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ================================================================
+# STAGE 3 — TEST
+# ================================================================
+test:backend:
+  stage: test
+  image: python:3.11-slim
+  services:
+    - name: postgres:15-alpine
+      alias: db
+  variables:
+    POSTGRES_DB: inventory
+    POSTGRES_USER: admin
+    POSTGRES_PASSWORD: secret
+    DB_HOST: db
+    DB_NAME: inventory
+    DB_USER: admin
+    DB_PASSWORD: secret
+  script:
+    - pip install flask flask-cors psycopg2-binary --quiet
+    - |
+      python3 -c "
+      import time, psycopg2, sys
+      for i in range(12):
+          try:
+              conn = psycopg2.connect(host='db',database='inventory',user='admin',password='secret')
+              print('OK Database connection successful')
+              conn.close()
+              sys.exit(0)
+          except Exception as e:
+              print(f'Waiting attempt {i+1}/12: {e}')
+              time.sleep(5)
+      sys.exit(1)
+      "
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+test:compose-validate:
+  stage: test
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - apk add --no-cache py3-pip python3
+    - pip3 install docker-compose --quiet
+    - docker-compose config
+    - echo "OK docker-compose.yml is valid"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ================================================================
+# STAGE 4 — PUSH to GitHub Container Registry
+# Requires: GITHUB_TOKEN, GITHUB_USERNAME, GITHUB_REPO
+# ================================================================
+push:backend:
+  stage: push
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+  script:
+    - docker build -t $IMAGE_BACKEND:$CI_COMMIT_SHORT_SHA -t $IMAGE_BACKEND:latest ./backend
+    - docker push $IMAGE_BACKEND:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE_BACKEND:latest
+    - echo "Pushed backend to ghcr.io"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+push:frontend:
+  stage: push
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+  script:
+    - |
+      cat > Dockerfile.frontend << 'DOCKERFILE'
+      FROM nginx:alpine
+      COPY frontend/index.html /usr/share/nginx/html/index.html
+      COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+      DOCKERFILE
+    - docker build -f Dockerfile.frontend -t $IMAGE_FRONTEND:$CI_COMMIT_SHORT_SHA -t $IMAGE_FRONTEND:latest .
+    - docker push $IMAGE_FRONTEND:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE_FRONTEND:latest
+    - echo "Pushed frontend to ghcr.io"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ================================================================
+# STAGE 5 — DEPLOY via SSH
+# Requires: SSH_PRIVATE_KEY, DEPLOY_HOST, DEPLOY_USER
+# ================================================================
+deploy:production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+  script:
+    - |
+      ssh -o StrictHostKeyChecking=no "$DEPLOY_USER@$DEPLOY_HOST" "
+        cd ~/inventory-app
+        git pull origin main
+        echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_USERNAME --password-stdin
+        docker compose pull
+        docker compose up -d --remove-orphans
+        docker image prune -f
+        echo Deployment complete
+      "
+  environment:
+    name: production
+    url: http://$DEPLOY_HOST:8080
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  when: manual
