@@ -1,0 +1,64 @@
+# 📦 Inventory Manager
+
+A full-stack inventory management web app built with Flask, PostgreSQL, Nginx, and Docker.
+
+## 🛠 Tech Stack
+
+| Layer     | Technology         |
+|-----------|--------------------|
+| Frontend  | HTML/CSS/JS + Nginx |
+| Backend   | Python Flask API   |
+| Database  | PostgreSQL 15      |
+| Container | Docker + Compose   |
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Docker Desktop installed
+- Git installed
+
+### Run the Project
+
+```bash
+git clone https://github.com/YOUR_USERNAME/inventory-app.git
+cd inventory-app
+docker compose up --build
+```
+
+Open your browser at: **http://localhost:8080**
+
+## 📁 Project Structure
+
+```
+inventory-app/
+├── frontend/
+│   ├── index.html       # UI (HTML/CSS/JS)
+│   └── nginx.conf       # Nginx reverse proxy config
+├── backend/
+│   ├── app.py           # Flask REST API
+│   ├── requirements.txt
+│   └── Dockerfile
+├── docker-compose.yml
+├── .gitignore
+└── README.md
+```
+
+## 🔌 API Endpoints
+
+| Method | Endpoint          | Description      |
+|--------|-------------------|------------------|
+| GET    | /api/items        | Get all items    |
+| POST   | /api/items        | Add new item     |
+| DELETE | /api/items/:id    | Delete item      |
+| GET    | /health           | Health check     |
+
+## 🛑 Stop the App
+
+```bash
+docker compose down
+```
+
+To also remove database data:
+```bash
+docker compose down -v
+```
