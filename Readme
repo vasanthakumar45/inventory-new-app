@@ -62,3 +62,5 @@ To also remove database data:
 ```bash
 docker compose down -v
 ```
+
+
